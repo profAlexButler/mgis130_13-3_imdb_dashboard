@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Movie Database Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  /* PRESENTATION: how it looks */
+  :root { --ink: #222; --gray: #666; --line: #ddd; --orange: #f76902; --blue: #2e6db4; --card: #fff; --bg: #f4f4f4; }
+  body { font-family: Arial, sans-serif; margin: 0; background: var(--bg); color: var(--ink); }
+  header { background: #222; color: #fff; padding: 16px 20px; }
+  header h1 { margin: 0; font-size: 22px; }
+  header p { margin: 4px 0 0; color: #ccc; font-size: 14px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 16px; }
+  .tile { background: var(--card); border-radius: 6px; padding: 14px; }
+  .tile .n { font-size: 28px; font-weight: bold; }
+  .tile .l { color: var(--gray); font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .card { background: var(--card); border-radius: 6px; padding: 14px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 4px; font-size: 17px; }
+  .card .q { color: var(--gray); font-size: 13px; margin: 0 0 10px; }
+  .wide { grid-column: 1 / -1; }
+  canvas { max-height: 320px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  input { padding: 8px; font-size: 14px; border: 1px solid #bbb; border-radius: 4px; flex: 1 1 200px; min-width: 0; }
+  #joinTable { overflow-x: auto; }
+  button { padding: 8px 12px; font-size: 14px; background: var(--orange); color: #fff; border: 0; border-radius: 4px; cursor: pointer; }
+  button.plain { background: #777; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; margin-top: 10px; }
+  th, td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; }
+  td.num { text-align: right; }
+  .ok { color: #1b7f3b; font-weight: bold; }
+  .diff { color: #b26a00; font-weight: bold; }
+  .no { color: #b00020; font-weight: bold; }
+  .odd { background: #fff3e0; }
+  .note { color: var(--gray); font-size: 13px; }
+  footer { font-size: 12px; color: var(--gray); text-align: center; padding: 20px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } .tiles { grid-template-columns: 1fr 1fr; } }
+</style>
+</head>
+<body>
+<header>
+  <h1>Movie Database Dashboard</h1>
+  <p>Our IMDb slice in Supabase, plus one outside source joined in</p>
+</header>
+<main>
+  <div class="tiles">
+    <div class="tile"><div class="n" id="tTitles">-</div><div class="l">titles</div></div>
+    <div class="tile"><div class="n" id="tMovies">-</div><div class="l">movies (the rest are TV series)</div></div>
+    <div class="tile"><div class="n" id="tRating">-</div><div class="l">average rating, out of 10</div></div>
+    <div class="tile"><div class="n" id="tPeople">-</div><div class="l">people</div></div>
+  </div>
+
+  <div class="grid">
+    <div class="card wide">
+      <h2>Do more popular movies rate higher?</h2>
+      <p class="q">Each dot is one title. Across: how many people voted (each step is 10 times more). Up: the average rating. Hover a dot for its name.</p>
+      <canvas id="scatter"></canvas>
+    </div>
+    <div class="card">
+      <h2>When are our titles from?</h2>
+      <p class="q">Titles per decade, by first year</p>
+      <canvas id="decades"></canvas>
+    </div>
+    <div class="card">
+      <h2>Which genres show up most?</h2>
+      <p class="q">A title can have up to three genres, so this adds up to more than the number of titles</p>
+      <canvas id="genres"></canvas>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Join a second source: API-Ninjas Celebrity</h2>
+    <p class="q">Our database knows each person's name and nconst. API-Ninjas doesn't know our nconst, so the only thing we can join on is the name. Pick a movie and see how well that works.</p>
+    <div class="row" id="keyRow">
+      <span class="note" id="keySource"></span>
+      <input id="key" type="password" placeholder="Paste an API-Ninjas key">
+      <button id="saveKey" type="button">Use key</button>
+      <button id="clearKey" type="button" class="plain">Forget key</button>
+    </div>
+    <div class="row" id="movieButtons" style="margin-top:10px"></div>
+    <p class="note" id="joinStatus"></p>
+    <div id="joinTable"></div>
+    <canvas id="worth" style="margin-top:12px; display:none"></canvas>
+  </div>
+</main>
+<footer>
+  Information courtesy of IMDb (https://www.imdb.com). Used with permission.<br>
+  Celebrity data from API Ninjas (https://api-ninjas.com).
+</footer>
+
+<script src="config.js"></script>
+<script>
+  // DATA: where the data lives
+  const DB_URL = "https://dtunynbrioxevustcusq.supabase.co/rest/v1/";
+  const DB_KEY = "sb_publishable_TFkUuNbu92z7nOIZPqtgBw_UIkezmsS"; // publishable: made to be public, read-only
+  const CELEB_URL = "https://api.api-ninjas.com/v1/celebrity?name=";
+  const KEY_STORAGE = "imdbDashboardNinjasKey";
+  const MOVIES = [
+    ["tt0114709", "Toy Story"], ["tt1375666", "Inception"], ["tt4633694", "Spider-Verse"],
+    ["tt1517268", "Barbie"], ["tt15239678", "Dune: Part Two"]
+  ];
+
+  // The API-Ninjas key: from config.js if it exists (kept out of git), otherwise a paste box
+  function ninjasKey() {
+    const fromFile = window.CONFIG && window.CONFIG.API_NINJAS_KEY;
+    if (fromFile && fromFile !== "PASTE_YOUR_KEY_HERE") return { key: fromFile, source: "config.js" };
+    try { const k = localStorage.getItem(KEY_STORAGE); if (k) return { key: k, source: "the paste box" }; } catch (e) {}
+    return { key: "", source: "" };
+  }
+
+  function db(path) {
+    return fetch(DB_URL + path, { headers: { apikey: DB_KEY } }).then(function (r) { return r.json(); });
+  }
+
+  // PROCESSING: shape the rows into what each chart needs
+  function decadeCounts(titles) {
+    const c = {};
+    titles.forEach(function (t) { if (t.startYear) { const d = Math.floor(t.startYear / 10) * 10; c[d] = (c[d] || 0) + 1; } });
+    const keys = Object.keys(c).sort();
+    return { labels: keys.map(function (k) { return k + "s"; }), values: keys.map(function (k) { return c[k]; }) };
+  }
+
+  function genreCounts(titles) {
+    const c = {};
+    titles.forEach(function (t) { (t.genres || "").split(",").forEach(function (g) { if (g) c[g] = (c[g] || 0) + 1; }); });
+    return Object.entries(c).sort(function (a, b) { return b[1] - a[1]; }).slice(0, 10);
+  }
+
+  function lookUp(name, key) {
+    return fetch(CELEB_URL + encodeURIComponent(name), { headers: { "X-Api-Key": key } })
+      .then(function (r) {
+        return r.json().then(function (body) {
+          if (!r.ok) throw new Error("API-Ninjas said no (" + r.status + "): " + (body.error || "unknown"));
+          return body;
+        });
+      });
+  }
+
+  function judge(ourName, results) {
+    if (results.length === 0) return { kind: "no", label: "Not found", match: null };
+    const exact = results.find(function (x) { return x.name.toLowerCase() === ourName.toLowerCase(); });
+    if (exact) return { kind: "ok", label: "Same name", match: exact };
+    return { kind: "diff", label: "Different name", match: results[0] };
+  }
+
+  function looksOdd(m) {
+    if (!m) return "";
+    if (typeof m.height === "number" && m.height < 1.4) return "Height looks wrong";
+    if (!m.birthday) return "No birthday: same person?";
+    return "";
+  }
+
+  // PRESENTATION: draw it
+  const charts = {};
+  function draw(id, config) { if (charts[id]) charts[id].destroy(); charts[id] = new Chart(document.getElementById(id), config); }
+
+  function showOverview(titles, people) {
+    const rated = titles.filter(function (t) { return t.title_ratings; });
+    const avg = rated.reduce(function (s, t) { return s + Number(t.title_ratings.averageRating); }, 0) / rated.length;
+    document.getElementById("tTitles").textContent = titles.length;
+    document.getElementById("tMovies").textContent = titles.filter(function (t) { return t.titleType === "movie"; }).length;
+    document.getElementById("tRating").textContent = avg.toFixed(1);
+    document.getElementById("tPeople").textContent = people.length;
+
+    draw("scatter", {
+      type: "scatter",
+      data: { datasets: [{ data: rated.map(function (t) { return { x: t.title_ratings.numVotes, y: Number(t.title_ratings.averageRating), name: t.primaryTitle + " (" + t.startYear + ")" }; }), backgroundColor: "rgba(46,109,180,0.6)", pointRadius: 5 }] },
+      options: { plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { return c.raw.name + ": " + c.raw.y + " from " + c.raw.x.toLocaleString() + " votes"; } } } },
+        scales: { x: { type: "logarithmic", title: { display: true, text: "Number of votes (log scale)" } }, y: { title: { display: true, text: "Average rating" } } } }
+    });
+    const d = decadeCounts(titles);
+    draw("decades", { type: "bar", data: { labels: d.labels, datasets: [{ data: d.values, backgroundColor: "#2e6db4" }] }, options: { plugins: { legend: { display: false } } } });
+    const g = genreCounts(titles);
+    draw("genres", { type: "bar", data: { labels: g.map(function (x) { return x[0]; }), datasets: [{ data: g.map(function (x) { return x[1]; }), backgroundColor: "#2e6db4" }] }, options: { indexAxis: "y", plugins: { legend: { display: false } } } });
+  }
+
+  function showKeySource() {
+    const k = ninjasKey();
+    document.getElementById("keySource").textContent = k.key ? "Using the key from " + k.source + "." : "No API-Ninjas key yet.";
+    const fromFile = k.source === "config.js";
+    ["key", "saveKey", "clearKey"].forEach(function (id) { document.getElementById(id).style.display = fromFile ? "none" : ""; });
+  }
+
+  function runJoin(tconst, title) {
+    const k = ninjasKey();
+    const status = document.getElementById("joinStatus");
+    if (!k.key) { status.textContent = "Add an API-Ninjas key first (config.js, or the paste box)."; return; }
+    status.textContent = "Getting the cast from our database, then asking API-Ninjas about each person...";
+    db("title_principals?select=ordering,characters,name_basics(primaryName)&tconst=eq." + tconst + "&order=ordering")
+      .then(function (cast) {
+        return Promise.all(cast.map(function (c) {
+          return lookUp(c.name_basics.primaryName, k.key).then(function (res) { return { cast: c, verdict: judge(c.name_basics.primaryName, res) }; });
+        }));
+      })
+      .then(function (rows) {
+        const same = rows.filter(function (r) { return r.verdict.kind === "ok"; }).length;
+        status.textContent = title + ": " + same + " of " + rows.length + " people matched by name. " + rows.length + " calls used.";
+        let html = "<table><tr><th>Our database</th><th>Character</th><th>API-Ninjas found</th><th>Match</th><th class='num'>Net worth</th><th class='num'>Height (m)</th><th>Birthday</th><th>Check</th></tr>";
+        rows.forEach(function (r) {
+          const m = r.verdict.match, odd = looksOdd(m);
+          const chars = r.cast.characters ? JSON.parse(r.cast.characters).join(", ") : "";
+          html += "<tr" + (odd ? " class='odd'" : "") + "><td>" + r.cast.name_basics.primaryName + "</td><td>" + chars + "</td>"
+            + "<td>" + (m ? m.name : "-") + "</td><td class='" + r.verdict.kind + "'>" + r.verdict.label + "</td>"
+            + "<td class='num'>" + (m && m.net_worth ? "$" + (m.net_worth / 1e6).toFixed(0) + "M" : "-") + "</td>"
+            + "<td class='num'>" + (m && m.height ? m.height.toFixed(2) : "-") + "</td>"
+            + "<td>" + (m && m.birthday ? m.birthday : "-") + "</td><td>" + odd + "</td></tr>";
+        });
+        document.getElementById("joinTable").innerHTML = html + "</table>";
+        const matched = rows.filter(function (r) { return r.verdict.kind === "ok" && r.verdict.match.net_worth; });
+        const c = document.getElementById("worth");
+        c.style.display = matched.length ? "" : "none";
+        draw("worth", { type: "bar",
+          data: { labels: matched.map(function (r) { return r.cast.name_basics.primaryName; }), datasets: [{ data: matched.map(function (r) { return r.verdict.match.net_worth / 1e6; }), backgroundColor: "#f76902" }] },
+          options: { plugins: { legend: { display: false }, title: { display: true, text: title + " cast: net worth in $ millions (API-Ninjas estimate; name matches only)" } } } });
+      })
+      .catch(function (err) { status.textContent = err.message; });
+  }
+
+  MOVIES.forEach(function (m) {
+    const b = document.createElement("button");
+    b.textContent = m[1];
+    b.addEventListener("click", function () { runJoin(m[0], m[1]); });
+    document.getElementById("movieButtons").appendChild(b);
+  });
+  document.getElementById("saveKey").addEventListener("click", function () {
+    try { localStorage.setItem(KEY_STORAGE, document.getElementById("key").value.trim()); } catch (e) {}
+    document.getElementById("key").value = "";
+    showKeySource();
+  });
+  document.getElementById("clearKey").addEventListener("click", function () {
+    try { localStorage.removeItem(KEY_STORAGE); } catch (e) {}
+    showKeySource();
+  });
+
+  showKeySource();
+  Promise.all([
+    db("title_basics?select=tconst,primaryTitle,titleType,startYear,genres,title_ratings(averageRating,numVotes)"),
+    db("name_basics?select=nconst")
+  ]).then(function (r) { showOverview(r[0], r[1]); });
+</script>
+</body>
+</html>

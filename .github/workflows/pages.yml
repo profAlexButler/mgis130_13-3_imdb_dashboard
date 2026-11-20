@@ -1,0 +1,47 @@
+# Publishes this site to GitHub Pages.
+# On GitHub's build server, it writes config.js from the repository secret
+# API_NINJAS_KEY, so the key never has to be committed to the repo.
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Get the files from the repo
+        uses: actions/checkout@v4
+
+      - name: Write config.js from the secret
+        env:
+          API_NINJAS_KEY: ${{ secrets.API_NINJAS_KEY }}
+        run: |
+          printf 'window.CONFIG = {\n  API_NINJAS_KEY: "%s"\n};\n' "$API_NINJAS_KEY" > config.js
+          echo "config.js written (the key itself is hidden in this log)"
+
+      - name: Set up Pages
+        uses: actions/configure-pages@v5
+
+      - name: Package the site
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: .
+
+      - name: Publish
+        id: deployment
+        uses: actions/deploy-pages@v4
